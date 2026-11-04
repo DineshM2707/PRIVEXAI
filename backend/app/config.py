@@ -2,11 +2,20 @@ import os
 from dataclasses import dataclass
 
 
+def normalize_database_url(url: str) -> str:
+    for scheme in ("postgres://", "postgresql://"):
+        if url.startswith(scheme):
+            return f"postgresql+psycopg://{url[len(scheme):]}"
+    return url
+
+
 @dataclass(frozen=True)
 class Settings:
-    database_url: str = os.getenv(
+    database_url: str = normalize_database_url(
+        os.getenv(
         "DATABASE_URL",
         "postgresql+psycopg://datashield:datashield@localhost:5432/datashield",
+        )
     )
     secret_key: str = os.getenv("SECRET_KEY", "")
     access_token_minutes: int = int(os.getenv("ACCESS_TOKEN_MINUTES", "30"))

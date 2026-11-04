@@ -48,6 +48,10 @@ Requirements: Docker Engine/Desktop with the Compose plugin.
 
 The API is proxied through the frontend at `/api`; the PostgreSQL service is not published to the host. Compose runs Alembic migrations before starting the API.
 
+## Deploy on Render
+
+For a hosted frontend, API, and PostgreSQL setup, see [RENDER_DEPLOYMENT.md](./RENDER_DEPLOYMENT.md). The Render Blueprint is `render.yaml`; review it and its free-tier database limitations before creating services. Local `.env` values and the SQLite demo database are not used or uploaded by this configuration.
+
 ## Local development
 
 Docker is not required for local development. To run the application immediately without installing a database server, use SQLite for the local demo. PostgreSQL remains the deployment/database target and uses the same SQLAlchemy models and Alembic migration.

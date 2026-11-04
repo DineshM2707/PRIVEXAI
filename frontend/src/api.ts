@@ -49,6 +49,8 @@ export type ScanResult = {
   message: string;
 };
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
+
 export async function api<T>(
   path: string,
   token?: string,
@@ -60,7 +62,7 @@ export async function api<T>(
   }
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(`/api${path}`, { ...options, headers });
+  const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as
       | { detail?: string }

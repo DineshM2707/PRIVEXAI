@@ -16,16 +16,20 @@ Last updated: 2026-11-05
 | Frontend tests, type check, and production build | COMPLETED | 4 frontend tests passed; TypeScript check and production build passed. Vite reports a non-fatal large-chunk advisory. |
 | Backend regression tests | COMPLETED | Latest full run: 26 tests passed, including registration/login, roles, detection/risk, TXT/CSV/PDF upload, unsupported-file handling, and safe CSV reporting. |
 | Local development runtime | COMPLETED | The app was verified locally through the Vite proxy and backend health endpoint. Services are not guaranteed to remain running after the current session; start commands are in `README.md`. |
-| Public Render website, API, and PostgreSQL deployment | BLOCKED | Configured hostnames previously returned HTTP 404. No live deployment is verified. Local changes are not pushed; deployment requires explicit user authorization and Render Blueprint setup. |
-| Docker/PostgreSQL runtime verification | NOT STARTED | Docker CLI is unavailable in this environment. Local verification uses the existing SQLite database; hosted PostgreSQL has not been validated. |
+| Public Render website, API, and PostgreSQL deployment | COMPLETED | Render Blueprint `privexai-production` provisioned the static frontend, FastAPI service, and PostgreSQL database on the configured free plans. The frontend and registration route return HTTP 200; API health returns HTTP 200. PostgreSQL migrations completed. Cloud registration/login were not separately exercised. |
+| Docker/PostgreSQL runtime verification | BLOCKED | Hosted PostgreSQL was provisioned and Alembic migrations ran successfully. Docker CLI is unavailable; local development remains on SQLite. |
 
 ## Current database and runtime facts
 
 - Database: `backend/datashield-local.db` (SQLite), Alembic revision `0002_user_profile`.
 - Read-only counts at last inspection: 6 users, 9 policies, 21 scan events, and 18 incidents. The two synthetic accounts are retained for demonstration/testing.
+- The hosted Render PostgreSQL database is separate from the local SQLite database. Its Alembic migrations completed during API startup; existing local user and incident records were not copied or reset.
 - The previous registration error was caused by opening a stale local frontend URL/port with no listener. Browser events showed `ERR_CONNECTION_REFUSED` at port 5175. The valid local Vite/API configuration is frontend port 5173 with `/api` proxied to backend port 8000.
-- Render URL checks: `https://privexai-frontend.onrender.com/` returned HTTP 404; `https://privexai-api.onrender.com/api/health` returned HTTP 404. Treat these hostnames as unverified, not as a working public website.
-- No GitHub commit or push was performed for the current registration-flow changes.
+- Public frontend: `https://privexai-frontend.onrender.com/` and `/register` returned HTTP 200.
+- Public API health: `https://privexai-api.onrender.com/api/health` returned `{"status":"ok","service":"PRIVEXAI API"}` with HTTP 200.
+- Commits `1727858` (contextual scanner/report features) and `dcf95a8` (Alembic PostgreSQL URL normalization) are pushed to `origin/main`.
+- Exactly one Render Blueprint was deployed: `privexai-production`, containing `privexai-frontend`, `privexai-api`, and `privexai-db`. The API deployment initially failed because Alembic used SQLAlchemy's default psycopg2 driver despite psycopg v3 being installed; `backend/migrations/env.py` now applies the project's PostgreSQL URL normalizer. The latest deploy completed migrations and started Uvicorn.
+- Local servers are stopped; ports 5173 and 8000 were verified free. Public Render services remain deployed.
 
 ## Validation record
 
@@ -34,15 +38,15 @@ Last updated: 2026-11-05
 - `git diff --check` — **passed after all changes**.
 - Live local health: `GET /api/health` succeeded directly and through the frontend proxy on the prior local server session. Current shared browser diagnostics show 401 responses for stored-session requests; sign out and sign in again if that persists after a backend restart because JWT signing keys are process environment configuration.
 - Registration: one synthetic account was created in the existing SQLite database, login succeeded, duplicate registration returned HTTP 409, and an invalid username returned a field-specific HTTP 422. No additional account was created during the latest connection check.
-- External endpoints and browser console: the browser's stale port showed connection-refused errors; configured Render URLs returned 404. No public registration is available until the hosted frontend, backend, and database are deployed and connected.
+- Public deployment: frontend `/` and `/register` returned HTTP 200; API `/api/health` returned HTTP 200 after PostgreSQL migration and API startup. Cloud account creation and cloud login have not been tested; no cloud test account was created.
+- Focused deployment-fix tests: `python -m unittest discover -s tests -p 'test_config.py' -v` — **2 passed**. `git diff --check` passed.
 
 ## Remaining work and limitations
 
-1. Review and authorize committing/pushing the local changes if desired; no commit or push has been made.
-2. Deploy/configure the Render Blueprint, then verify actual service URLs, `VITE_API_BASE_URL`, `CORS_ORIGINS`, health, registration, and login.
-3. Docker/PostgreSQL deployment behavior is not verified. Local development uses SQLite.
-4. Email verification, password recovery, OCR, DOCX, incident assignment/history, tenant isolation, and dedicated audit logs are not implemented. Login throttling is in-memory; JWTs are stored in browser `localStorage`.
-5. Scanner decisions are for submitted samples only and do not monitor or enforce real network transfers. Match-strength values are explanatory heuristics, not calibrated confidence or ML.
+1. Cloud registration and login have not been end-to-end tested; only the deployed registration page and API health endpoint were verified.
+2. Docker is unavailable; local development uses SQLite, while hosted migrations on PostgreSQL completed.
+3. Email verification, password recovery, OCR, DOCX, incident assignment/history, tenant isolation, and dedicated audit logs are not implemented. Login throttling is in-memory; JWTs are stored in browser `localStorage`.
+4. Scanner decisions are for submitted samples only and do not monitor or enforce real network transfers. Match-strength values are explanatory heuristics, not calibrated confidence or ML.
 
 ## Local startup
 

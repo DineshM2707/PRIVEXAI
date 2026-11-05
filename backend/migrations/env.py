@@ -4,6 +4,7 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from app.config import normalize_database_url
 from app.database import Base
 from app import models  # noqa: F401
 
@@ -17,6 +18,10 @@ config.set_main_option(
         "DATABASE_URL",
         "postgresql+psycopg://datashield:datashield@localhost:5432/datashield",
     ),
+)
+config.set_main_option(
+    "sqlalchemy.url",
+    normalize_database_url(config.get_main_option("sqlalchemy.url")),
 )
 target_metadata = Base.metadata
 

@@ -36,7 +36,7 @@ Last updated: 2026-11-05
 - Backend: `python -m unittest discover -s tests -v` — **26 passed** on the latest full run. An earlier run exposed a CSV `student_id` separator issue; the regex was corrected and the full suite now passes.
 - Frontend: `npm.cmd test` — **4 passed**; `npm.cmd run build` (including `tsc -b`) — **passed**, with non-fatal large-chunk advisory.
 - `git diff --check` — **passed after all changes**.
-- Live local health: `GET /api/health` succeeded directly and through the frontend proxy on the prior local server session. Current shared browser diagnostics show 401 responses for stored-session requests; sign out and sign in again if that persists after a backend restart because JWT signing keys are process environment configuration.
+- Live local health: `GET /api/health` succeeded directly and through the frontend proxy on the prior local server session. Earlier local browser diagnostics showed 401 responses for a stored-session token after the backend secret changed; sign out and sign in again if using that old local session.
 - Registration: one synthetic account was created in the existing SQLite database, login succeeded, duplicate registration returned HTTP 409, and an invalid username returned a field-specific HTTP 422. No additional account was created during the latest connection check.
 - Public deployment: frontend `/` and `/register` returned HTTP 200; API `/api/health` returned HTTP 200 after PostgreSQL migration and API startup. Cloud account creation and cloud login have not been tested; no cloud test account was created.
 - Focused deployment-fix tests: `python -m unittest discover -s tests -p 'test_config.py' -v` — **2 passed**. `git diff --check` passed.

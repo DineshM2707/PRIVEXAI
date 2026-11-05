@@ -101,15 +101,22 @@ button { cursor: pointer; }
 .chart-legend > span { display: flex; gap: 6px; align-items: center; }
 .legend-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
 .mint-dot { background: #54e1b5; }.red-dot { background: #ff7486; }
+.amber-dot { background: #ffba62; }
 .trend-chart { width: 100%; height: 177px; margin-top: 9px; }
 .category-chart { position: relative; width: 100%; height: 139px; margin: 4px auto 0; }
+.donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+.donut-center b { color: #e9f1f8; font: 600 21px "Space Grotesk", sans-serif; }
+.donut-center span { margin-top: 2px; color: #8292a6; font-size: 8px; text-transform: uppercase; letter-spacing: .7px; }
+.top-category { padding: 5px 7px; border: 1px solid #26483d; border-radius: 5px; color: #74d9b8; background: #14251f; font-size: 7px; font-weight: 700; }
 .empty-chart { position: absolute; inset: 0; display: grid; place-items: center; color: #728196; font-size: 10px; pointer-events: none; }
 .category-legend { display: grid; gap: 8px; }
-.category-legend > div, .category-legend > div > span { display: flex; align-items: center; }
-.category-legend > div { justify-content: space-between; color: #8c9caf; font-size: 9px; }
-.category-legend > div > span { gap: 7px; }
+.category-legend > button, .category-legend > button > span { display: flex; align-items: center; }
+.category-legend > button { justify-content: space-between; padding: 3px 4px; border: 0; border-radius: 4px; color: #8c9caf; background: transparent; text-align: left; font-size: 9px; }
+.category-legend > button:hover, .category-legend > button.selected { background: #162331; color: #dce7f1; }
+.category-legend > button > span { gap: 7px; }
 .category-legend i { width: 7px; height: 7px; border-radius: 2px; }
 .category-legend b { color: #d5dfeb; font-size: 9px; font-weight: 600; }
+.category-legend small { color: #76869a; font-size: 8px; font-weight: 400; }
 .incidents-panel { overflow: hidden; padding: 15px 0 0; }
 .incidents-panel > .panel-heading { padding: 0 16px 13px; }
 .text-button { display: flex; align-items: center; gap: 5px; padding: 4px 0; border: 0; color: #68dcb7; background: transparent; font-size: 9px; font-weight: 600; }
@@ -141,6 +148,12 @@ button { cursor: pointer; }
 .status-tag { padding: 4px 6px; border-radius: 4px; color: #dfa8ff; background: #2d2340; font-size: 8px; text-transform: capitalize; }
 .status-tag.resolved { color: #77d7b8; background: #18332e; }.status-tag.acknowledged { color: #a4b6cf; background: #1e2b3d; }
 .time-cell { color: #8291a4 !important; font-size: 8px !important; }
+.incident-actions { display: flex; align-items: center; gap: 8px; }
+.incident-details summary { color: #71daba; font-size: 9px; cursor: pointer; }
+.incident-details > div { position: absolute; z-index: 4; width: min(360px, 70vw); max-height: 280px; overflow: auto; padding: 12px; margin-top: 5px; border: 1px solid #304258; border-radius: 7px; color: #9cacc0; background: #101925; box-shadow: 0 14px 30px #0008; white-space: normal; font-size: 9px; }
+.incident-details > div b { color: #dce6ef; }
+.incident-details ul { display: grid; gap: 5px; padding-left: 16px; }
+.incident-details p { max-height: 100px; overflow: auto; color: #b6c4d2; line-height: 1.5; overflow-wrap: anywhere; }
 .bottom-grid { display: grid; grid-template-columns: 1fr 1fr 1.1fr; gap: 11px; margin-top: 14px; }
 .action-card, .protection-note { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px; border: 1px solid #1d2a3a; border-radius: 7px; color: #aab8c8; background: #101824; text-align: left; }
 .action-card:hover { border-color: #315043; background: #111f20; }
@@ -232,6 +245,9 @@ button { cursor: pointer; }
 .decision-banner small { color: #8394a7; font-size: 7px; font-weight: 700; letter-spacing: .8px; }
 .decision-banner b { color: #72dfba; font: 700 13px "Space Grotesk", sans-serif; }.decision-banner.block b { color: #ff8999; }.decision-banner.mask b { color: #ffc273; }
 .decision-banner.review b { color: #a9bdff; }
+.severity-chip { margin-left: auto; padding: 4px 6px; border-radius: 4px; color: #72d9b7; background: #173129; font-size: 8px; text-transform: uppercase; }
+.severity-chip.medium { color: #ffc16f; background: #382e23; }
+.severity-chip.high, .severity-chip.critical { color: #ff8999; background: #38232e; }
 .score-pill { margin-left: auto; color: #eaf3f8; font: 600 19px "Space Grotesk", sans-serif; }
 .score-pill small { margin-left: 2px; color: #8494a7; font: 400 9px "DM Sans", sans-serif; letter-spacing: 0; }
 .result-message { margin: 10px 0 15px; color: #9aaabd; font-size: 9px; line-height: 1.5; }
@@ -241,6 +257,17 @@ button { cursor: pointer; }
 .finding-row, .risk-factor { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 5px; color: #adbac8; background: #141f2b; font-size: 9px; }
 .finding-dot { width: 6px; height: 6px; border-radius: 50%; background: #ffbf6d; }
 .finding-row b { margin-left: auto; color: #e2ebf4; font-size: 9px; }
+.finding-explanation { display: grid; gap: 3px; min-width: 0; }
+.finding-explanation b { color: #d9e3ed; font-size: 9px; }
+.finding-explanation small { color: #8090a4; font-size: 8px; line-height: 1.4; white-space: normal; }
+.finding-confidence { flex: 0 0 auto; color: #70d7b6; font-size: 8px; }
+.document-upload { padding: 10px; margin-top: 12px; border: 1px dashed #304258; border-radius: 6px; background: #101a26; }
+.document-upload-row { display: flex; align-items: center; gap: 8px; }
+.document-upload-row input { min-width: 0; height: auto; padding: 7px; }
+.document-upload > small { display: block; margin-top: 6px; color: #78899e; font-size: 8px; }
+.document-scan-note { display: flex; align-items: flex-start; gap: 7px; padding: 8px; margin-top: 9px; border: 1px solid #263748; border-radius: 5px; color: #8ea3ba; background: #111b27; font-size: 8px; line-height: 1.45; }
+.document-scan-note svg { flex: 0 0 auto; color: #67d6b1; }
+.document-scan-note b { color: #d7e2ec; }
 .no-findings { display: flex; align-items: center; gap: 7px; padding: 8px; border-radius: 5px; color: #9cbdaf; background: #14231f; font-size: 9px; }
 .no-findings svg { color: #63d7b2; }
 .risk-factor { justify-content: space-between; padding: 6px 8px; color: #92a2b5; background: transparent; border-bottom: 1px solid #1e2a38; border-radius: 0; }

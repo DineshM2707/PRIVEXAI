@@ -91,6 +91,8 @@ class FindingResponse(BaseModel):
     category: str
     count: int
     masked_examples: list[str]
+    confidence: float = Field(ge=0, le=1)
+    explanation: str
 
 
 class ScanResponse(BaseModel):
@@ -105,6 +107,13 @@ class ScanResponse(BaseModel):
     message: str
 
 
+class DocumentScanResponse(ScanResponse):
+    filename: str
+    extraction_method: str
+    extracted_characters: int
+    truncated: bool
+
+
 class IncidentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -113,6 +122,7 @@ class IncidentResponse(BaseModel):
     destination: str
     categories: list[str]
     finding_counts: dict[str, int]
+    risk_factors: list[dict[str, str | int]]
     risk_score: int
     severity: str
     decision: str

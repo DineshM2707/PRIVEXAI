@@ -1,6 +1,6 @@
 import unittest
 
-from app.detection import assess_risk, contextual_risk_cues, scan_text
+from app.detection import assess_risk, contextual_risk_cues, explain_findings, scan_text
 
 
 class DetectionTests(unittest.TestCase):
@@ -51,6 +51,19 @@ class DetectionTests(unittest.TestCase):
         self.assertNotIn("1234567890123456", protected)
         self.assertNotIn("9876543210", protected)
         self.assertEqual(len(matches["account_number"]), 1)
+
+    def test_ordinary_numbers_are_not_classified_as_account_numbers_without_context(self):
+        matches, _ = scan_text("Quarterly report: 2024 students, batch 12345678.")
+        self.assertNotIn("account_number", matches)
+
+    def test_explanation_strength_increases_with_matching_context(self):
+        labeled, _ = scan_text("PAN: ABCDE1234F")
+        unlabeled, _ = scan_text("ABCDE1234F")
+        labeled_explanation = explain_findings("PAN: ABCDE1234F", labeled)["pan_like_id"]
+        unlabeled_explanation = explain_findings("ABCDE1234F", unlabeled)["pan_like_id"]
+        self.assertGreater(labeled_explanation["confidence"], unlabeled_explanation["confidence"])
+        self.assertIn("context strengthens", labeled_explanation["explanation"])
+        self.assertIn("verify", unlabeled_explanation["explanation"])
 
     def test_ignores_plain_text_without_sensitive_patterns(self):
         matches, protected = scan_text("Synthetic quarterly report for internal review.")

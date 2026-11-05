@@ -2,7 +2,7 @@ from collections import Counter
 
 from sqlalchemy.orm import Session
 
-from app.detection import PATTERNS, assess_risk, scan_text
+from app.detection import PATTERNS, assess_risk, explain_findings, scan_text
 from app.models import Incident, Policy, ScanEvent, User
 
 
@@ -69,11 +69,13 @@ def evaluate_scan(
     )
     scan_event.decision = decision
 
+    explanations = explain_findings(text, matches)
     findings = [
         {
             "category": category,
             "count": len(occurrences),
             "masked_examples": [PATTERNS[category].replacement] * min(len(occurrences), 3),
+            **explanations[category],
         }
         for category, occurrences in matches.items()
     ]

@@ -1,14 +1,16 @@
 from contextlib import asynccontextmanager
+import csv
 from datetime import datetime, timezone
+from io import StringIO
 from threading import Lock
 from time import monotonic
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import desc, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,6 +20,7 @@ from app.database import SessionLocal, get_db
 from app.models import Incident, Policy, ScanEvent, User
 from app.schemas import (
     AnalyticsResponse,
+    DocumentScanResponse,
     IncidentResponse,
     IncidentStatusUpdate,
     LoginRequest,
@@ -32,6 +35,7 @@ from app.schemas import (
 )
 from app.security import create_access_token, get_token_user, hash_password, verify_password
 from app.services import build_analytics, ensure_default_policies, evaluate_scan, seed_demo_incidents
+from app.documents import MAX_DOCUMENT_BYTES, DocumentReadError, extract_document_text
 
 
 @asynccontextmanager
@@ -75,11 +79,32 @@ app.add_middleware(
 @app.exception_handler(RequestValidationError)
 async def handle_request_validation_error(
     _: Request,
-    __: RequestValidationError,
+    exc: RequestValidationError,
 ) -> JSONResponse:
+    field_errors: dict[str, str] = {}
+    messages = {
+        "full_name": "Enter a valid name between 2 and 120 characters.",
+        "email": "Enter a valid email address.",
+        "username": "Use 3–80 characters: start with a letter or number, then use only letters, numbers, periods, underscores, or hyphens.",
+        "password": "Use 12–256 characters with uppercase, lowercase, a number, and a symbol.",
+        "role": "Public registration does not accept a role.",
+    }
+    for error in exc.errors():
+        location = error.get("loc", ())
+        field = location[-1] if location else None
+        if isinstance(field, str) and field in messages:
+            field_errors[field] = messages[field]
+        elif isinstance(field, str) and field not in {"body", "query", "path", "header"}:
+            field_errors[field] = "Check this field's value and length."
+        elif error.get("type") == "extra_forbidden":
+            field_errors["role"] = messages["role"]
+
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": "Invalid request data. Check required fields and allowed values."},
+        content={
+            "detail": "Check the highlighted fields and try again.",
+            "field_errors": field_errors,
+        },
     )
 
 
@@ -266,6 +291,39 @@ def scan(
     return ScanResponse(**result)
 
 
+@app.post("/api/scans/document", response_model=DocumentScanResponse)
+async def scan_document(
+    file: Annotated[UploadFile, File()],
+    destination: Annotated[str, Form(min_length=1, max_length=160)],
+    context: Annotated[Literal["internal", "partner", "public"], Form()],
+    destination_authorized: Annotated[bool, Form()],
+    db: DbSession,
+    user: Annotated[User, Depends(require_roles("admin", "analyst"))],
+) -> DocumentScanResponse:
+    content = await file.read(MAX_DOCUMENT_BYTES + 1)
+    await file.close()
+    try:
+        extracted = extract_document_text(file.filename or "", content)
+    except DocumentReadError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    result, _ = evaluate_scan(
+        db=db,
+        user=user,
+        text=extracted.text,
+        source=f"Document: {extracted.filename}"[:120],
+        destination=destination,
+        destination_authorized=destination_authorized,
+        context=context,
+    )
+    return DocumentScanResponse(
+        **result,
+        filename=extracted.filename,
+        extraction_method=extracted.extraction_method,
+        extracted_characters=len(extracted.text),
+        truncated=extracted.truncated,
+    )
+
+
 @app.get("/api/incidents", response_model=list[IncidentResponse])
 def incidents(
     db: DbSession,
@@ -273,6 +331,53 @@ def incidents(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[Incident]:
     return db.query(Incident).order_by(desc(Incident.created_at)).limit(limit).all()
+
+
+@app.get("/api/incidents/report.csv")
+def incident_report(
+    db: DbSession,
+    _: CurrentUser,
+) -> StreamingResponse:
+    output = StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "Incident reference",
+            "Detection categories",
+            "Risk score",
+            "Severity",
+            "Decision",
+            "Explanation",
+            "Recommended action",
+            "Current status",
+            "Created at",
+        ]
+    )
+    for incident in db.query(Incident).order_by(desc(Incident.created_at)).limit(200).all():
+        explanation = "; ".join(
+            str(factor.get("label", ""))
+            for factor in incident.risk_factors
+            if factor.get("label")
+        )
+        writer.writerow(
+            [
+                f"PRIVEX-{incident.id:06d}",
+                ", ".join(incident.categories),
+                incident.risk_score,
+                incident.severity,
+                incident.decision,
+                explanation,
+                incident.recommended_action,
+                incident.status,
+                incident.created_at.isoformat(),
+            ]
+        )
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="privexai-incidents.csv"'},
+    )
 
 
 @app.patch("/api/incidents/{incident_id}", response_model=IncidentResponse)

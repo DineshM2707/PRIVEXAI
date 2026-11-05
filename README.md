@@ -9,7 +9,10 @@ PRIVEXAI is a sample-based enterprise Data Leakage Prevention (DLP) demonstratio
 - Detect email, Indian-phone-shaped, Aadhaar-like, PAN-like, labeled account-number, selected API-secret, and explicitly labeled synthetic student-record patterns in submitted text.
 - Apply enabled per-category mask/block rules, destination authorization, sharing context, and simple language-context cues to an explainable 0–100 risk score.
 - Return allow/mask/block/review decisions and a masked preview. Submitted raw sample text is not persisted; only scan metadata and a redacted preview are stored.
+- Explain each pattern finding with heuristic match strength, the rule reason, category policy contribution, destination risk, and sharing-context risk. Match strength is not a calibrated probability or ML output.
+- Upload synthetic TXT, CSV, or text-based PDF files (maximum 2 MB; extraction is capped at 20,000 characters). Scanned-image OCR, DOCX, and other formats are not supported. Extracted text is processed by the same scanner and only the redacted preview/metadata are stored.
 - Track incidents, update incident status, and view synthetic demo statistics and seven-day trends.
+- Expand incident investigations and download a CSV report of incident metadata, risk explanations, and remediation recommendations. Raw submitted content is excluded from reports.
 - Protect API endpoints with JWT authentication, Argon2id password hashing, and administrator/analyst/viewer role checks.
 - Register public accounts with server-enforced viewer access; administrators continue to grant analyst access separately.
 - Sign in with a username or registered email address. Public registration requires a 12-character mixed-case, numeric, and symbol password.
@@ -96,7 +99,9 @@ The PRIVEXAI logo at `frontend/public/privexai-logo.png` is used in the login, r
 - `GET /api/auth/me` — current account
 - `GET /api/users` and `POST /api/users` — list/create analyst or viewer accounts (admin-only)
 - `POST /api/scans` — analyze an explicitly submitted text sample (admin/analyst)
+- `POST /api/scans/document` — extract and scan TXT, CSV, or text-based PDF content (admin/analyst; multipart upload, maximum 2 MB)
 - `GET /api/incidents` and `PATCH /api/incidents/{id}` — list and update incident status
+- `GET /api/incidents/report.csv` — download up to 200 incident metadata rows (authenticated; excludes raw sample content)
 - `GET /api/policies` and `PUT /api/policies/{category}` — inspect/edit rules (admin-only edits)
 - `GET /api/analytics` — sample counts, decisions, category totals, and seven-day trend
 

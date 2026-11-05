@@ -1,10 +1,13 @@
 from dataclasses import replace
+from io import BytesIO
 import unittest
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app import main, security
 from app.config import settings as default_settings
@@ -199,8 +202,26 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertNotIn(sensitive_marker, response.text)
         self.assertEqual(
             response.json()["detail"],
-            "Invalid request data. Check required fields and allowed values.",
+            "Check the highlighted fields and try again.",
         )
+        self.assertIn("text", response.json()["field_errors"])
+
+    def test_registration_validation_returns_safe_field_specific_errors(self):
+        response = self.client.post(
+            "/api/auth/register",
+            json={
+                "full_name": "Synthetic Example",
+                "email": "not-an-email",
+                "username": "invalid@name",
+                "password": "weak-password",
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+        field_errors = response.json()["field_errors"]
+        self.assertIn("email", field_errors)
+        self.assertIn("username", field_errors)
+        self.assertIn("password", field_errors)
+        self.assertNotIn("weak-password", response.text)
 
     def test_admin_can_create_roles_and_enforce_access(self):
         admin_token = self.login()
@@ -299,6 +320,8 @@ class ApiIntegrationTests(unittest.TestCase):
         scan = scan_response.json()
         self.assertEqual(scan["decision"], "block")
         self.assertEqual(scan["risk_score"], 70)
+        self.assertGreaterEqual(scan["findings"][0]["confidence"], 0)
+        self.assertTrue(scan["findings"][0]["explanation"])
         self.assertNotIn("ABCDE1234F", scan["protected_preview"])
         self.assertEqual(scan["findings"][0]["masked_examples"], ["[ID REDACTED]"])
 
@@ -307,6 +330,12 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertNotIn("ABCDE1234F", incident["masked_preview"])
         self.assertNotIn(raw_sample, incident["masked_preview"])
         self.assertEqual(incident["recommended_action"], scan["recommended_action"])
+        report = self.client.get("/api/incidents/report.csv", headers=headers)
+        self.assertEqual(report.status_code, 200)
+        self.assertIn("text/csv", report.headers["content-type"])
+        self.assertIn("PRIVEX-", report.text)
+        self.assertNotIn("ABCDE1234F", report.text)
+        self.assertIn("Recommended action", report.text)
 
         policy_response = self.client.put(
             "/api/policies/email",
@@ -332,6 +361,81 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(analytics["total_scans"], 9)
         self.assertEqual(analytics["incidents"], 8)
         self.assertEqual(analytics["blocked"], 5)
+
+    def test_document_upload_scans_synthetic_txt_csv_and_pdf(self):
+        token = self.login()
+        headers = {"Authorization": f"Bearer {token}"}
+        fields = {
+            "destination": "Synthetic internal archive",
+            "destination_authorized": "true",
+            "context": "internal",
+        }
+        cases = [
+            (
+                "synthetic.txt",
+                b"Student ID: STU-2048 and email learner@example.test",
+                "text/plain",
+            ),
+            (
+                "synthetic.csv",
+                b"field,value\nstudent_id,STU-2048\nemail,learner@example.test\n",
+                "text/csv",
+            ),
+        ]
+        for filename, content, content_type in cases:
+            response = self.client.post(
+                "/api/scans/document",
+                headers=headers,
+                data=fields,
+                files={"file": (filename, content, content_type)},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["filename"], filename)
+            self.assertIn("student_id", {item["category"] for item in response.json()["findings"]})
+            self.assertNotIn("STU-2048", response.json()["protected_preview"])
+
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=200, height=100)
+        font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            }
+        )
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})}
+        )
+        stream = DecodedStreamObject()
+        stream.set_data(b"BT /F1 12 Tf 20 60 Td (Student ID: STU-2048) Tj ET")
+        page[NameObject("/Contents")] = writer._add_object(stream)
+        pdf = BytesIO()
+        writer.write(pdf)
+        response = self.client.post(
+            "/api/scans/document",
+            headers=headers,
+            data=fields,
+            files={"file": ("synthetic.pdf", pdf.getvalue(), "application/pdf")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["extraction_method"], "PDF text extraction")
+        self.assertIn("student_id", {item["category"] for item in response.json()["findings"]})
+        self.assertNotIn("STU-2048", response.json()["protected_preview"])
+
+    def test_document_upload_rejects_unsupported_file_type(self):
+        token = self.login()
+        response = self.client.post(
+            "/api/scans/document",
+            headers={"Authorization": f"Bearer {token}"},
+            data={
+                "destination": "Synthetic internal archive",
+                "destination_authorized": "true",
+                "context": "internal",
+            },
+            files={"file": ("sample.docx", b"synthetic", "application/octet-stream")},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("TXT, CSV, or PDF", response.json()["detail"])
 
     def test_review_decision_creates_incident_and_analytics_count(self):
         token = self.login()

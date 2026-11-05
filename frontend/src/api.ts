@@ -19,6 +19,7 @@ export type Incident = {
   destination: string;
   categories: string[];
   finding_counts: Record<string, number>;
+  risk_factors: { label: string; points: number }[];
   risk_score: number;
   severity: string;
   decision: string;
@@ -42,14 +43,34 @@ export type ScanResult = {
   decision: "allow" | "mask" | "block" | "review";
   risk_score: number;
   severity: string;
-  findings: { category: string; count: number; masked_examples: string[] }[];
+  findings: {
+    category: string;
+    count: number;
+    masked_examples: string[];
+    confidence: number;
+    explanation: string;
+  }[];
   risk_factors: { label: string; points: number }[];
   protected_preview: string;
   recommended_action: string;
   message: string;
+  filename?: string;
+  extraction_method?: string;
+  extracted_characters?: number;
+  truncated?: boolean;
 };
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly fieldErrors: Record<string, string> = {},
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 export async function api<T>(
   path: string,
@@ -57,7 +78,7 @@ export async function api<T>(
   options: RequestInit = {},
 ): Promise<T> {
   const headers = new Headers(options.headers);
-  if (options.body && !headers.has("Content-Type")) {
+  if (typeof options.body === "string" && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -65,9 +86,28 @@ export async function api<T>(
   const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as
-      | { detail?: string }
+      | { detail?: string; field_errors?: Record<string, string> }
       | null;
-    throw new Error(body?.detail ?? `Request failed (${response.status})`);
+    throw new ApiError(
+      body?.detail ?? `Request failed (${response.status})`,
+      body?.field_errors ?? {},
+    );
   }
   return response.json() as Promise<T>;
+}
+
+export async function downloadIncidentReport(token: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/incidents/report.csv`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new ApiError(body?.detail ?? `Report download failed (${response.status})`);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "privexai-incidents.csv";
+  link.click();
+  URL.revokeObjectURL(url);
 }

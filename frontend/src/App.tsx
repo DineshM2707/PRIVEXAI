@@ -10,9 +10,11 @@ import {
   CircleHelp,
   ClipboardCheck,
   Database,
+  Download,
   Eye,
   EyeOff,
   FileSearch,
+  FileUp,
   Fingerprint,
   Gauge,
   LayoutDashboard,
@@ -39,7 +41,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Analytics, api, Incident, Policy, ScanResult, Token } from "./api";
+import { Analytics, ApiError, api, downloadIncidentReport, Incident, Policy, ScanResult, Token } from "./api";
 
 type Page = "overview" | "scanner" | "incidents" | "policies";
 type DataBundle = { analytics: Analytics; incidents: Incident[]; policies: Policy[] };
@@ -282,14 +284,16 @@ function Register({ onBack }: { onBack: () => void }) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
+    setFieldErrors({});
     if (password !== confirmPassword) {
-      setError("Passwords do not match.");
+      setFieldErrors({ confirm_password: "Passwords do not match." });
       return;
     }
     setBusy(true);
@@ -301,7 +305,11 @@ function Register({ onBack }: { onBack: () => void }) {
       setUsername(session.username);
       setCreated(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Account creation failed.");
+      if (cause instanceof ApiError && Object.keys(cause.fieldErrors).length > 0) {
+        setFieldErrors(cause.fieldErrors);
+      } else {
+        setError(cause instanceof Error ? cause.message : "Account creation failed.");
+      }
     } finally {
       setBusy(false);
     }
@@ -328,14 +336,20 @@ function Register({ onBack }: { onBack: () => void }) {
         <form onSubmit={submit} className="login-form">
           <label htmlFor="full-name">Full name</label>
           <input id="full-name" autoComplete="name" value={fullName} onChange={(event) => setFullName(event.target.value)} minLength={2} maxLength={120} required />
+          {fieldErrors.full_name && <div className="form-error" role="alert">{fieldErrors.full_name}</div>}
           <label htmlFor="register-email">Email</label>
           <input id="register-email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required />
+          {fieldErrors.email && <div className="form-error" role="alert">{fieldErrors.email}</div>}
           <label htmlFor="register-username">Username</label>
-          <input id="register-username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={80} required />
+          <input id="register-username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={80} pattern="[A-Za-z0-9][A-Za-z0-9._-]*" title="Use 3–80 characters: letters, numbers, periods, underscores, or hyphens; start with a letter or number." required />
+          <div className="password-hint">Use 3–80 letters, numbers, periods, underscores, or hyphens. Start with a letter or number.</div>
+          {fieldErrors.username && <div className="form-error" role="alert">{fieldErrors.username}</div>}
           <label htmlFor="register-password">Password</label>
-          <input id="register-password" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={256} required />
+          <input id="register-password" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={256} pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{12,256}" title="Use at least 12 characters with uppercase, lowercase, a number, and a symbol." required />
+          {fieldErrors.password && <div className="form-error" role="alert">{fieldErrors.password}</div>}
           <label htmlFor="confirm-password">Confirm password</label>
           <input id="confirm-password" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={12} maxLength={256} required />
+          {fieldErrors.confirm_password && <div className="form-error" role="alert">{fieldErrors.confirm_password}</div>}
           <div className="password-hint">Use at least 12 characters with uppercase, lowercase, a number, and a symbol.</div>
           {error && <div className="form-error" role="alert">{error}</div>}
           <button className="primary-button login-submit" disabled={busy}>{busy ? "Creating account..." : "Create viewer account"}<ArrowUpRight size={17} /></button>
@@ -360,6 +374,7 @@ function PageHeading({ eyebrow, title, description, action }: { eyebrow: string;
 }
 
 function Overview({ analytics, incidents, loading, onNavigate }: { analytics: Analytics; incidents: Incident[]; loading: boolean; onNavigate: (page: Page) => void }) {
+  const [activeCategory, setActiveCategory] = useState("");
   const chartData = analytics.trends.map((point) => ({
     ...point,
     label: new Date(`${point.date}T12:00:00`).toLocaleDateString("en", { weekday: "short" }),
@@ -368,12 +383,14 @@ function Overview({ analytics, incidents, loading, onNavigate }: { analytics: An
     name: categoryLabels[name] ?? name,
     value,
   }));
+  const findingsTotal = categoryData.reduce((total, item) => total + item.value, 0);
+  const topCategory = [...categoryData].sort((left, right) => right.value - left.value)[0];
   const colors = ["#54e1b5", "#7994ff", "#ffba62", "#ba8cff", "#55c8e8", "#ff7486"];
   const statCards = [
     { label: "SAMPLES ANALYZED", value: analytics.total_scans, change: "Submitted samples", icon: Activity, tone: "mint" },
     { label: "NEEDS REVIEW", value: analytics.reviewed, change: "Manual decision queue", icon: CircleHelp, tone: "purple" },
     { label: "TRANSFERS BLOCKED", value: analytics.blocked, change: "Policy enforcement", icon: ShieldAlert, tone: "red" },
-    { label: "RISK SCORE AVG.", value: `${analytics.average_risk}/100`, change: "Across demo events", icon: Gauge, tone: "amber" },
+    { label: "RISK SCORE AVG.", value: `${analytics.average_risk}/100`, change: `${analytics.high_risk} high-risk events`, icon: Gauge, tone: "amber" },
   ];
 
   return (
@@ -393,7 +410,7 @@ function Overview({ analytics, incidents, loading, onNavigate }: { analytics: An
       <div className="dashboard-grid">
         <section className="panel trend-panel">
           <div className="panel-heading"><div><h2>Risk activity</h2><p>Submitted sample decisions · last 7 days</p></div><button className="period-button">7 days <ChevronDown size={14} /></button></div>
-          <div className="chart-legend"><span><i className="legend-dot mint-dot" /> Sample scans</span><span><i className="legend-dot red-dot" /> Blocked</span></div>
+          <div className="chart-legend"><span><i className="legend-dot mint-dot" /> Sample scans</span><span><i className="legend-dot red-dot" /> Blocked</span><span><i className="legend-dot amber-dot" /> Masked</span></div>
           <div className="trend-chart">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}>
@@ -404,19 +421,21 @@ function Overview({ analytics, incidents, loading, onNavigate }: { analytics: An
                 <Tooltip contentStyle={{ background: "#111a27", border: "1px solid #263648", borderRadius: 9, color: "#eaf1f7" }} />
                 <Area type="monotone" dataKey="scans" name="Samples" stroke="#54e1b5" strokeWidth={2.5} fill="url(#scanFill)" />
                 <Area type="monotone" dataKey="blocked" name="Blocked" stroke="#ff7486" strokeWidth={2} fill="transparent" />
+                <Area type="monotone" dataKey="masked" name="Masked" stroke="#ffba62" strokeWidth={2} fill="transparent" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </section>
         <section className="panel category-panel">
-          <div className="panel-heading"><div><h2>Data types detected</h2><p>Across flagged sample events</p></div><button className="more-button" aria-label="More information"><CircleHelp size={17} /></button></div>
+          <div className="panel-heading"><div><h2>Data types detected</h2><p>Across flagged sample events</p></div>{topCategory && <span className="top-category">TOP: {topCategory.name}</span>}</div>
           <div className="category-chart">
             <ResponsiveContainer width="100%" height="100%">
-              <PieChart><Pie data={categoryData} dataKey="value" nameKey="name" innerRadius={54} outerRadius={76} paddingAngle={4} stroke="none">{categoryData.map((_, index) => <Cell key={index} fill={colors[index % colors.length]} />)}</Pie><Tooltip contentStyle={{ background: "#111a27", border: "1px solid #263648", borderRadius: 9, color: "#eaf1f7" }} /></PieChart>
+              <PieChart onMouseLeave={() => setActiveCategory("")}><Pie data={categoryData} dataKey="value" nameKey="name" innerRadius={54} outerRadius={76} paddingAngle={4} stroke="none" animationDuration={650} onMouseEnter={(_, index) => setActiveCategory(categoryData[index]?.name ?? "")}>{categoryData.map((item, index) => <Cell key={item.name} fill={colors[index % colors.length]} fillOpacity={!activeCategory || activeCategory === item.name ? 1 : 0.35} />)}</Pie><Tooltip formatter={(value, name) => [`${value} (${findingsTotal ? ((Number(value) / findingsTotal) * 100).toFixed(1) : "0.0"}%)`, name]} contentStyle={{ background: "#111a27", border: "1px solid #263648", borderRadius: 9, color: "#eaf1f7" }} /></PieChart>
             </ResponsiveContainer>
+            <div className="donut-center"><b>{findingsTotal}</b><span>findings</span></div>
             {categoryData.length === 0 && <div className="empty-chart">No findings yet</div>}
           </div>
-          <div className="category-legend">{categoryData.slice(0, 4).map((item, index) => <div key={item.name}><span><i style={{ background: colors[index % colors.length] }} />{item.name}</span><b>{item.value}</b></div>)}</div>
+          <div className="category-legend">{categoryData.map((item, index) => <button key={item.name} className={activeCategory === item.name ? "selected" : ""} onMouseEnter={() => setActiveCategory(item.name)} onFocus={() => setActiveCategory(item.name)} onBlur={() => setActiveCategory("")} onClick={() => setActiveCategory(activeCategory === item.name ? "" : item.name)}><span><i style={{ background: colors[index % colors.length] }} />{item.name}</span><b>{item.value}<small>{findingsTotal ? ` · ${((item.value / findingsTotal) * 100).toFixed(1)}%` : ""}</small></b></button>)}</div>
         </section>
       </div>
 
@@ -443,6 +462,7 @@ function Scanner({ token, onComplete }: { token: string; onComplete: () => void 
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -469,6 +489,31 @@ function Scanner({ token, onComplete }: { token: string; onComplete: () => void 
     }
   }
 
+  async function submitDocument() {
+    if (!documentFile) return;
+    setBusy(true);
+    setError("");
+    setResult(null);
+    const formData = new FormData();
+    formData.set("file", documentFile);
+    formData.set("destination", destination);
+    formData.set("destination_authorized", String(authorized));
+    formData.set("context", context);
+    try {
+      const response = await api<ScanResult>("/scans/document", token, {
+        method: "POST",
+        body: formData,
+      });
+      setResult(response);
+      setDocumentFile(null);
+      await onComplete();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Document could not be scanned.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       <PageHeading eyebrow="SAMPLE INSPECTION" title="Analyze a sample" description="Submit text for sensitive-data analysis. This tool does not inspect network traffic." />
@@ -478,6 +523,11 @@ function Scanner({ token, onComplete }: { token: string; onComplete: () => void 
           <label className="field-label" htmlFor="sample-text">Text to analyze</label>
           <textarea id="sample-text" value={text} onChange={(event) => setText(event.target.value)} maxLength={20000} required placeholder="Paste text to inspect..." />
           <div className="char-count">{text.length.toLocaleString()} / 20,000 characters</div>
+          <div className="document-upload">
+            <label className="field-label" htmlFor="sample-document">Or upload a document (TXT, CSV, PDF · max 2 MB)</label>
+            <div className="document-upload-row"><input id="sample-document" type="file" accept=".txt,.csv,.pdf,text/plain,text/csv,application/pdf" onChange={(event) => setDocumentFile(event.target.files?.[0] ?? null)} /><button className="secondary-button small-button" type="button" disabled={!documentFile || busy} onClick={() => void submitDocument()}><FileUp size={14} /> Scan document</button></div>
+            <small>PDF text extraction only; scanned-image OCR and Word files are not supported.</small>
+          </div>
           <div className="form-row">
             <div><label className="field-label" htmlFor="sample-source">Source</label><input id="sample-source" value={source} onChange={(event) => setSource(event.target.value)} maxLength={120} required /></div>
             <div><label className="field-label" htmlFor="sample-destination">Destination</label><input id="sample-destination" value={destination} onChange={(event) => setDestination(event.target.value)} maxLength={160} required /></div>
@@ -494,10 +544,11 @@ function Scanner({ token, onComplete }: { token: string; onComplete: () => void 
           <div className="panel-heading"><div><h2>Analysis result</h2><p>Decision and explainable risk factors</p></div><span className="result-shield"><Shield size={18} /></span></div>
           {!result ? <div className="result-empty"><div className="result-empty-icon"><FileSearch size={25} /></div><b>Ready when you are</b><p>Submit sample text to see findings, policy action and risk score.</p><div className="result-empty-note"><Database size={14} /> No network traffic is monitored</div></div> : (
             <div className="result-content">
-              <div className={`decision-banner ${result.decision}`}><div className="decision-icon">{result.decision === "block" ? <ShieldAlert size={20} /> : result.decision === "mask" ? <Fingerprint size={20} /> : result.decision === "review" ? <CircleHelp size={20} /> : <ShieldCheck size={20} />}</div><div><small>POLICY DECISION</small><b>{result.decision.toUpperCase()}</b></div><div className="score-pill">{result.risk_score}<small>/100</small></div></div>
+              <div className={`decision-banner ${result.decision}`}><div className="decision-icon">{result.decision === "block" ? <ShieldAlert size={20} /> : result.decision === "mask" ? <Fingerprint size={20} /> : result.decision === "review" ? <CircleHelp size={20} /> : <ShieldCheck size={20} />}</div><div><small>POLICY DECISION</small><b>{result.decision.toUpperCase()}</b></div><span className={`severity-chip ${result.severity}`}>{result.severity}</span><div className="score-pill">{result.risk_score}<small>/100</small></div></div>
+              {result.filename && <div className="document-scan-note"><FileSearch size={14} /><span><b>{result.filename}</b> · {result.extraction_method} · {result.extracted_characters?.toLocaleString()} characters{result.truncated ? " · scan limited to first 20,000 extracted characters" : ""}</span></div>}
               <p className="result-message">{result.message}</p>
-              <div className="result-section-label">DETECTED DATA <span>{result.findings.reduce((sum, item) => sum + item.count, 0)}</span></div>
-              {result.findings.length ? <div className="finding-list">{result.findings.map((item) => <div className="finding-row" key={item.category}><span className="finding-dot" /><span>{categoryLabels[item.category] ?? item.category}</span><b>{item.count}</b></div>)}</div> : <div className="no-findings"><BadgeCheck size={17} /> No configured sensitive-data patterns detected</div>}
+              <div className="result-section-label">DETECTED DATA <span>HEURISTIC RULE MATCH STRENGTH · {result.findings.reduce((sum, item) => sum + item.count, 0)} matches</span></div>
+              {result.findings.length ? <div className="finding-list">{result.findings.map((item) => <div className="finding-row" key={item.category}><span className="finding-dot" /><span className="finding-explanation"><b>{categoryLabels[item.category] ?? item.category}</b><small>{item.explanation}</small></span><span className="finding-confidence">{Math.round(item.confidence * 100)}% match</span><b>{item.count}</b></div>)}</div> : <div className="no-findings"><BadgeCheck size={17} /> No configured sensitive-data patterns detected</div>}
               <div className="result-section-label">RISK FACTORS</div>
               <div className="risk-factor-list">{result.risk_factors.map((factor, index) => <div className="risk-factor" key={`${factor.label}-${index}`}><span>{factor.label}</span><b className={factor.points < 0 ? "negative" : ""}>{factor.points > 0 ? "+" : ""}{factor.points}</b></div>)}</div>
               <div className="recommendation"><BadgeCheck size={14} /><span><b>RECOMMENDED ACTION</b><small>{result.recommended_action}</small></span></div>
@@ -514,6 +565,7 @@ function Scanner({ token, onComplete }: { token: string; onComplete: () => void 
 function Incidents({ incidents, token, onUpdate }: { incidents: Incident[]; token: string; onUpdate: () => void | Promise<void> }) {
   const [filter, setFilter] = useState("all");
   const [error, setError] = useState("");
+  const [downloading, setDownloading] = useState(false);
   const filtered = useMemo(() => filter === "all" ? incidents : incidents.filter((incident) => incident.decision === filter), [filter, incidents]);
 
   async function updateStatus(incidentId: number, status: string) {
@@ -526,15 +578,27 @@ function Incidents({ incidents, token, onUpdate }: { incidents: Incident[]; toke
     }
   }
 
+  async function downloadReport() {
+    setError("");
+    setDownloading(true);
+    try {
+      await downloadIncidentReport(token);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Report download failed.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   return (
     <>
-      <PageHeading eyebrow="SECURITY EVENTS" title="Incidents" description="Review findings from submitted samples and track remediation status." action={<span className="count-badge"><Activity size={14} /> {incidents.length} events</span>} />
+      <PageHeading eyebrow="SECURITY EVENTS" title="Incidents" description="Review findings from submitted samples and track remediation status." action={<div className="incident-actions"><span className="count-badge"><Activity size={14} /> {incidents.length} events</span><button className="secondary-button small-button" onClick={() => void downloadReport()} disabled={downloading}><Download size={14} />{downloading ? "Preparing..." : "Export CSV"}</button></div>} />
       {error && <div className="error-banner" role="alert"><AlertTriangle size={16} />{error}</div>}
       <section className="panel incidents-panel full-table-panel">
         <div className="table-toolbar"><div className="filter-tabs">{["all", "block", "mask", "review", "allow"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item === "all" ? "All events" : item[0].toUpperCase() + item.slice(1)}</button>)}</div><button className="secondary-button small-button"><SlidersHorizontal size={15} /> Filters</button></div>
         <IncidentTable incidents={filtered} onStatusChange={updateStatus} />
       </section>
-      <p className="table-note"><LockKeyhole size={13} /> Incident records store masked previews and finding metadata, not submitted raw sample text.</p>
+      <p className="table-note"><LockKeyhole size={13} /> Incident records and CSV exports contain metadata and rule explanations only; raw submitted text is excluded.</p>
     </>
   );
 }
@@ -542,7 +606,7 @@ function Incidents({ incidents, token, onUpdate }: { incidents: Incident[]; toke
 function IncidentTable({ incidents, onStatusChange }: { incidents: Incident[]; onStatusChange?: (id: number, status: string) => void }) {
   if (!incidents.length) return <div className="table-empty"><ShieldCheck size={20} /><b>No incidents to show</b><span>Submitted sample findings will appear here.</span></div>;
   return (
-    <div className="table-scroll"><table className="data-table"><thead><tr><th>EVENT</th><th>SOURCE → DESTINATION</th><th>DATA TYPES</th><th>RISK</th><th>DECISION</th><th>RECOMMENDED ACTION</th><th>STATUS</th><th>TIME</th></tr></thead><tbody>
+    <div className="table-scroll"><table className="data-table"><thead><tr><th>EVENT</th><th>SOURCE → DESTINATION</th><th>DATA TYPES</th><th>RISK</th><th>DECISION</th><th>INVESTIGATION</th><th>RECOMMENDED ACTION</th><th>STATUS</th><th>TIME</th></tr></thead><tbody>
       {incidents.map((incident) => (
         <tr key={incident.id}>
           <td><div className="event-id">DS-{String(incident.id).padStart(4, "0")}</div><div className="event-sub">Sample inspection</div></td>
@@ -550,6 +614,7 @@ function IncidentTable({ incidents, onStatusChange }: { incidents: Incident[]; o
           <td><div className="tag-list">{incident.categories.length ? incident.categories.slice(0, 2).map((category) => <span className="data-tag" key={category}>{categoryLabels[category] ?? category}</span>) : <span className="event-sub">No findings</span>}{incident.categories.length > 2 && <span className="data-tag">+{incident.categories.length - 2}</span>}</div></td>
           <td><div className="risk-cell"><div className="risk-meter"><i style={{ width: `${incident.risk_score}%` }} className={incident.severity} /></div><b>{incident.risk_score}</b></div><div className={`severity-label ${incident.severity}`}>{incident.severity}</div></td>
           <td><span className={`decision-tag ${incident.decision}`}><i />{incident.decision}</span></td>
+          <td><details className="incident-details"><summary>Inspect</summary><div><b>Why flagged</b><ul>{incident.risk_factors.map((factor, index) => <li key={`${factor.label}-${index}`}>{factor.label} ({factor.points > 0 ? "+" : ""}{factor.points})</li>)}</ul><b>Protected preview</b><p>{incident.masked_preview}</p></div></details></td>
           <td className="recommended-cell">{incident.recommended_action}</td>
           <td>{onStatusChange ? <select className="status-select" value={incident.status} onChange={(event) => void onStatusChange(incident.id, event.target.value)} aria-label={`Status for incident ${incident.id}`}><option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="resolved">Resolved</option></select> : <span className={`status-tag ${incident.status}`}>{incident.status}</span>}</td>
           <td className="time-cell">{new Date(incident.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>

@@ -78,10 +78,7 @@ const categoryLabels: Record<string, string> = {
 };
 
 function App() {
-  const [token, setToken] = useState<Token | null>(() => {
-    const saved = localStorage.getItem("datashield.session");
-    return saved ? (JSON.parse(saved) as Token) : null;
-  });
+  const [token, setToken] = useState<Token | null>(null);
   const [page, setPage] = useState<Page>("overview");
   const [data, setData] = useState<DataBundle>({
     analytics: emptyAnalytics,
@@ -94,8 +91,27 @@ function App() {
     () => window.location.pathname === "/register" ? "register" : "login",
   );
 
-  const signOut = useCallback(() => {
-    localStorage.removeItem("datashield.session");
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const session = await api<Token>("/auth/me");
+        if (active) setToken(session);
+      } catch {
+        if (active) setToken(null);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const signOut = useCallback(async () => {
+    try {
+      await api<void>("/auth/logout", undefined, { method: "POST" });
+    } catch {
+      // Ignore server-side logout errors and clear local UI state.
+    }
     setToken(null);
     setData({ analytics: emptyAnalytics, incidents: [], policies: [] });
   }, []);
@@ -106,9 +122,9 @@ function App() {
     setError("");
     try {
       const [analytics, incidents, policies] = await Promise.all([
-        api<Analytics>("/analytics", token.access_token),
-        api<Incident[]>("/incidents", token.access_token),
-        api<Policy[]>("/policies", token.access_token),
+        api<Analytics>("/analytics"),
+        api<Incident[]>("/incidents"),
+        api<Policy[]>("/policies"),
       ]);
       setData({ analytics, incidents, policies });
     } catch (cause) {
@@ -143,10 +159,7 @@ function App() {
         <Register onBack={() => navigateAuth("login")} />
       ) : (
         <Login
-          onLogin={(session) => {
-            localStorage.setItem("datashield.session", JSON.stringify(session));
-            setToken(session);
-          }}
+          onLogin={(session) => setToken(session)}
           onRegister={() => navigateAuth("register")}
         />
       )
@@ -219,9 +232,9 @@ function App() {
         <div className="page-content">
           {error && <div className="error-banner" role="alert"><AlertTriangle size={17} />{error}<button onClick={() => void refresh()}>Retry</button></div>}
           {page === "overview" && <Overview analytics={data.analytics} incidents={data.incidents} loading={loading} onNavigate={setPage} />}
-          {page === "scanner" && <Scanner token={token.access_token} onComplete={refresh} />}
-          {page === "incidents" && <Incidents incidents={data.incidents} token={token.access_token} onUpdate={refresh} />}
-          {page === "policies" && <Policies policies={data.policies} token={token.access_token} onUpdate={refresh} role={token.role} />}
+          {page === "scanner" && <Scanner onComplete={refresh} />}
+          {page === "incidents" && <Incidents incidents={data.incidents} onUpdate={refresh} />}
+          {page === "policies" && <Policies policies={data.policies} onUpdate={refresh} role={token.role} />}
         </div>
         <footer className="page-footer"><span>PRIVEXAI <span className="footer-version">v0.1.0</span></span><span>Sample analysis only · No live network monitoring or external integrations</span></footer>
       </main>
@@ -453,7 +466,7 @@ function Overview({ analytics, incidents, loading, onNavigate }: { analytics: An
   );
 }
 
-function Scanner({ token, onComplete }: { token: string; onComplete: () => void | Promise<void> }) {
+function Scanner({ onComplete }: { onComplete: () => void | Promise<void> }) {
   const [text, setText] = useState("Student name: Jamie Rivera\nEmail: jamie.rivera@example.test\nPhone: 9876543210\nStudent ID: STU-2048\nGPA: 3.8\nAcademic note: Synthetic demo record only.");
   const [source, setSource] = useState("Student Demo Workspace");
   const [destination, setDestination] = useState("External partner");
@@ -470,7 +483,7 @@ function Scanner({ token, onComplete }: { token: string; onComplete: () => void 
     setError("");
     setResult(null);
     try {
-      const response = await api<ScanResult>("/scans", token, {
+      const response = await api<ScanResult>("/scans", undefined, {
         method: "POST",
         body: JSON.stringify({
           text,
@@ -500,7 +513,7 @@ function Scanner({ token, onComplete }: { token: string; onComplete: () => void 
     formData.set("destination_authorized", String(authorized));
     formData.set("context", context);
     try {
-      const response = await api<ScanResult>("/scans/document", token, {
+      const response = await api<ScanResult>("/scans/document", undefined, {
         method: "POST",
         body: formData,
       });
@@ -562,7 +575,7 @@ function Scanner({ token, onComplete }: { token: string; onComplete: () => void 
   );
 }
 
-function Incidents({ incidents, token, onUpdate }: { incidents: Incident[]; token: string; onUpdate: () => void | Promise<void> }) {
+function Incidents({ incidents, onUpdate }: { incidents: Incident[]; onUpdate: () => void | Promise<void> }) {
   const [filter, setFilter] = useState("all");
   const [error, setError] = useState("");
   const [downloading, setDownloading] = useState(false);
@@ -571,7 +584,7 @@ function Incidents({ incidents, token, onUpdate }: { incidents: Incident[]; toke
   async function updateStatus(incidentId: number, status: string) {
     setError("");
     try {
-      await api<Incident>(`/incidents/${incidentId}`, token, { method: "PATCH", body: JSON.stringify({ status }) });
+      await api<Incident>(`/incidents/${incidentId}`, undefined, { method: "PATCH", body: JSON.stringify({ status }) });
       await onUpdate();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Status update failed.");
@@ -582,7 +595,7 @@ function Incidents({ incidents, token, onUpdate }: { incidents: Incident[]; toke
     setError("");
     setDownloading(true);
     try {
-      await downloadIncidentReport(token);
+      await downloadIncidentReport();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Report download failed.");
     } finally {
@@ -624,7 +637,7 @@ function IncidentTable({ incidents, onStatusChange }: { incidents: Incident[]; o
   );
 }
 
-function Policies({ policies, token, onUpdate, role }: { policies: Policy[]; token: string; onUpdate: () => void | Promise<void>; role: string }) {
+function Policies({ policies, onUpdate, role }: { policies: Policy[]; onUpdate: () => void | Promise<void>; role: string }) {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const [draftWeights, setDraftWeights] = useState<Record<string, number>>({});
@@ -633,7 +646,7 @@ function Policies({ policies, token, onUpdate, role }: { policies: Policy[]; tok
     setError("");
     setSaved("");
     try {
-      await api<Policy>(`/policies/${policy.category}`, token, {
+      await api<Policy>(`/policies/${policy.category}`, undefined, {
         method: "PUT",
         body: JSON.stringify({
           action: values.action ?? policy.action,

@@ -1,23 +1,24 @@
+from collections import defaultdict
 from contextlib import asynccontextmanager
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import StringIO
-from threading import Lock
-from time import monotonic
 from typing import Annotated, Literal
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import JSONResponse, StreamingResponse
+from jose import jwt
 from sqlalchemy import desc, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal, get_db
-from app.models import Incident, Policy, ScanEvent, User
+from app.models import AuthSession, Incident, Policy, ScanEvent, SecurityEvent, User
 from app.schemas import (
     AnalyticsResponse,
     DocumentScanResponse,
@@ -33,7 +34,20 @@ from app.schemas import (
     UserCreateRequest,
     UserResponse,
 )
-from app.security import create_access_token, get_token_user, hash_password, verify_password
+from app.security import (
+    ACCESS_COOKIE,
+    CSRF_COOKIE,
+    REFRESH_COOKIE,
+    clear_auth_cookies,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    generate_csrf_token,
+    get_token_user,
+    hash_password,
+    set_auth_cookies,
+    verify_password,
+)
 from app.services import build_analytics, ensure_default_policies, evaluate_scan, seed_demo_incidents
 from app.documents import MAX_DOCUMENT_BYTES, DocumentReadError, extract_document_text
 
@@ -108,10 +122,61 @@ async def handle_request_validation_error(
     )
 
 
-login_attempts: dict[tuple[str, str], list[float]] = {}
-login_attempts_lock = Lock()
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_ATTEMPTS = 5
+login_attempts: dict[str, list[datetime]] = defaultdict(list)
+
+
+def client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def jwt_payload_jti(token: str) -> str:
+    claims = jwt.get_unverified_claims(token)
+    jti = claims.get("jti")
+    if not isinstance(jti, str):
+        raise ValueError("Token is missing a jti claim")
+    return jti
+
+
+def record_security_event(
+    db: Session,
+    event_type: str,
+    *,
+    user_id: int | None = None,
+    identifier: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    details: dict | None = None,
+    commit: bool = True,
+) -> None:
+    db.add(
+        SecurityEvent(
+            user_id=user_id,
+            event_type=event_type,
+            identifier=identifier,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=details,
+        )
+    )
+    if commit:
+        db.commit()
+
+
+def enforce_csrf(request: Request) -> None:
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    if request.url.path in {"/api/auth/login", "/api/auth/register", "/api/auth/refresh"}:
+        return
+    if request.headers.get("Authorization"):
+        return
+    if request.cookies.get(ACCESS_COOKIE) is None:
+        return
+    csrf_cookie = request.cookies.get(CSRF_COOKIE)
+    csrf_header = request.headers.get("X-CSRF-Token")
+    if not csrf_cookie or not csrf_header or not csrf_cookie == csrf_header:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF validation failed.")
 
 
 @app.middleware("http")
@@ -124,18 +189,32 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def enforce_csrf_middleware(request: Request, call_next):
+    try:
+        enforce_csrf(request)
+    except HTTPException:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "CSRF validation failed."},
+        )
+    return await call_next(request)
+
+
 bearer = HTTPBearer(auto_error=False)
 DbSession = Annotated[Session, Depends(get_db)]
 
 
 def current_user(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     db: DbSession,
 ) -> User:
-    if credentials is None:
+    token = credentials.credentials if credentials is not None else request.cookies.get(ACCESS_COOKIE)
+    if token is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sign in required.")
     try:
-        return get_token_user(credentials.credentials, db)
+        return get_token_user(token, db)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
@@ -158,19 +237,30 @@ def health() -> dict[str, str]:
 
 
 @app.post("/api/auth/login", response_model=TokenResponse)
-def login(payload: LoginRequest, request: Request, db: DbSession) -> TokenResponse:
+def login(payload: LoginRequest, request: Request, response: Response, db: DbSession) -> TokenResponse:
     identifier = payload.username.strip().lower()
-    client_ip = request.client.host if request.client else "unknown"
-    key = (client_ip, "*")
-    now = monotonic()
-    with login_attempts_lock:
-        recent = [attempt for attempt in login_attempts.get(key, []) if now - attempt < LOGIN_WINDOW_SECONDS]
-        login_attempts[key] = recent
-        if len(recent) >= LOGIN_MAX_ATTEMPTS:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many sign-in attempts. Try again later.",
-            )
+    ip = client_ip(request)
+    key = f"{ip}:{identifier}"
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=LOGIN_WINDOW_SECONDS)
+    failed_attempts = [attempt for attempt in login_attempts.get(key, []) if attempt >= cutoff]
+    login_attempts[key] = failed_attempts
+
+    if len(failed_attempts) >= LOGIN_MAX_ATTEMPTS:
+        login_attempts[key].append(now)
+        record_security_event(
+            db,
+            "login_failed",
+            identifier=identifier,
+            ip_address=ip,
+            user_agent=request.headers.get("user-agent"),
+            details={"reason": "rate_limited", "username": identifier},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many sign-in attempts. Try again later.",
+        )
+
     user = (
         db.query(User)
         .filter(
@@ -182,20 +272,57 @@ def login(payload: LoginRequest, request: Request, db: DbSession) -> TokenRespon
         .first()
     )
     if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
-        with login_attempts_lock:
-            login_attempts[key] = login_attempts.get(key, []) + [now]
+        login_attempts[key].append(now)
+        record_security_event(
+            db,
+            "login_failed",
+            user_id=user.id if user else None,
+            identifier=identifier,
+            ip_address=ip,
+            user_agent=request.headers.get("user-agent"),
+            details={"reason": "invalid_credentials", "username": identifier},
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password.")
-    with login_attempts_lock:
-        login_attempts.pop(key, None)
-    return TokenResponse(
-        access_token=create_access_token(user),
-        username=user.username,
-        role=user.role,
+
+    login_attempts.pop(key, None)
+    db.query(SecurityEvent).filter(
+        SecurityEvent.event_type == "login_failed",
+    ).filter(
+        or_(SecurityEvent.ip_address == ip, SecurityEvent.identifier == identifier),
+    ).delete()
+    session_key = str(uuid4())
+    access_token = create_access_token(user, session_key)
+    refresh_token = create_refresh_token(user, session_key)
+    csrf_token = generate_csrf_token()
+    auth_session = AuthSession(
+        user_id=user.id,
+        session_key=session_key,
+        refresh_token_hash=hash_password(refresh_token),
+        access_jti=jwt_payload_jti(access_token),
+        refresh_jti=jwt_payload_jti(refresh_token),
+        user_agent=request.headers.get("user-agent"),
+        ip_address=ip,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_days),
     )
+    db.add(auth_session)
+    db.flush()
+    set_auth_cookies(response, access_token, refresh_token, csrf_token)
+    record_security_event(
+        db,
+        "login_success",
+        user_id=user.id,
+        identifier=user.username,
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent"),
+        details={"username": user.username, "role": user.role},
+        commit=False,
+    )
+    db.commit()
+    return TokenResponse(access_token=access_token, username=user.username, role=user.role)
 
 
 @app.post("/api/auth/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-def register(payload: RegistrationRequest, db: DbSession) -> TokenResponse:
+def register(payload: RegistrationRequest, request: Request, response: Response, db: DbSession) -> TokenResponse:
     duplicate = (
         db.query(User)
         .filter(
@@ -219,23 +346,133 @@ def register(payload: RegistrationRequest, db: DbSession) -> TokenResponse:
     db.add(user)
     try:
         db.commit()
+        db.refresh(user)
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Username or email is already registered.",
         ) from exc
-    db.refresh(user)
-    return TokenResponse(
-        access_token=create_access_token(user),
-        username=user.username,
-        role=user.role,
+
+    session_key = str(uuid4())
+    access_token = create_access_token(user, session_key)
+    refresh_token = create_refresh_token(user, session_key)
+    csrf_token = generate_csrf_token()
+    auth_session = AuthSession(
+        user_id=user.id,
+        session_key=session_key,
+        refresh_token_hash=hash_password(refresh_token),
+        access_jti=jwt_payload_jti(access_token),
+        refresh_jti=jwt_payload_jti(refresh_token),
+        user_agent=request.headers.get("user-agent"),
+        ip_address=client_ip(request),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_days),
     )
+    db.add(auth_session)
+    db.flush()
+    set_auth_cookies(response, access_token, refresh_token, csrf_token)
+    record_security_event(
+        db,
+        "register_success",
+        user_id=user.id,
+        identifier=user.username,
+        ip_address=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        details={"username": user.username, "role": user.role},
+        commit=False,
+    )
+    db.commit()
+    return TokenResponse(access_token=access_token, username=user.username, role=user.role)
 
 
 @app.get("/api/auth/me", response_model=UserResponse)
 def me(user: CurrentUser) -> UserResponse:
     return UserResponse(username=user.username, role=user.role)
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response, db: DbSession, user: CurrentUser) -> Response:
+    refresh_token = request.cookies.get(REFRESH_COOKIE)
+    if refresh_token:
+        try:
+            payload = decode_token(refresh_token, expected_type="refresh")
+        except ValueError:
+            payload = None
+        if payload is not None:
+            session = db.query(AuthSession).filter(AuthSession.session_key == payload.get("sid")).first()
+            if session is not None and session.user_id == user.id:
+                if payload.get("jti") != session.refresh_jti:
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has been invalidated.")
+                session.revoked_at = datetime.now(timezone.utc)
+                db.commit()
+    clear_auth_cookies(response)
+    record_security_event(
+        db,
+        "logout",
+        user_id=user.id,
+        identifier=user.username,
+        ip_address=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        details={"username": user.username, "role": user.role},
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/auth/refresh", response_model=TokenResponse)
+def refresh(request: Request, response: Response, db: DbSession) -> TokenResponse:
+    refresh_token = request.cookies.get(REFRESH_COOKIE)
+    if not refresh_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token missing.")
+
+    try:
+        payload = decode_token(refresh_token, expected_type="refresh")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token.") from exc
+
+    user = db.get(User, int(payload["sub"]))
+    if user is None or not user.is_active or payload.get("role") != user.role:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User is inactive or token permissions have changed.")
+
+    session = db.query(AuthSession).filter(AuthSession.session_key == payload.get("sid")).first()
+    if session is None or session.user_id != user.id or session.revoked_at is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is invalid or has been revoked.")
+    if payload.get("jti") != session.refresh_jti:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has been invalidated.")
+
+    if not verify_password(refresh_token, session.refresh_token_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token invalid.")
+
+    new_session_key = str(uuid4())
+    new_access_token = create_access_token(user, new_session_key)
+    new_refresh_token = create_refresh_token(user, new_session_key)
+    new_csrf_token = generate_csrf_token()
+    new_session = AuthSession(
+        user_id=user.id,
+        session_key=new_session_key,
+        refresh_token_hash=hash_password(new_refresh_token),
+        access_jti=jwt_payload_jti(new_access_token),
+        refresh_jti=jwt_payload_jti(new_refresh_token),
+        user_agent=request.headers.get("user-agent"),
+        ip_address=client_ip(request),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_days),
+    )
+    db.add(new_session)
+    db.flush()
+    session.revoked_at = datetime.now(timezone.utc)
+    session.replaced_by_session_id = new_session.id
+    set_auth_cookies(response, new_access_token, new_refresh_token, new_csrf_token)
+    record_security_event(
+        db,
+        "refresh_success",
+        user_id=user.id,
+        identifier=user.username,
+        ip_address=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        details={"username": user.username, "role": user.role},
+        commit=False,
+    )
+    db.commit()
+    return TokenResponse(access_token=new_access_token, username=user.username, role=user.role)
 
 
 @app.get("/api/users", response_model=list[UserResponse])
@@ -253,16 +490,18 @@ def users(
 )
 def create_user(
     payload: UserCreateRequest,
+    request: Request,
     db: DbSession,
-    _: Annotated[User, Depends(require_roles("admin"))],
+    actor: Annotated[User, Depends(require_roles("admin"))],
 ) -> User:
-    if db.query(User).filter(User.username == payload.username).first() is not None:
+    username = payload.username.strip().lower()
+    if db.query(User).filter(func.lower(User.username) == username).first() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Username is already registered.",
         )
     user = User(
-        username=payload.username,
+        username=username,
         password_hash=hash_password(payload.password),
         role=payload.role,
         is_active=True,
@@ -270,6 +509,20 @@ def create_user(
     db.add(user)
     db.commit()
     db.refresh(user)
+    record_security_event(
+        db,
+        "privileged_account_change",
+        user_id=actor.id,
+        identifier=actor.username,
+        ip_address=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        details={
+            "action": "create_user",
+            "target_user": user.username,
+            "target_role": user.role,
+            "actor": actor.username,
+        },
+    )
     return user
 
 

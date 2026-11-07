@@ -81,6 +81,7 @@ npm.cmd run dev
 ```
 
 Open the Vite URL (normally `http://localhost:5173`). Its `/api` requests are proxied to `http://localhost:8000`. To use another backend port, set `VITE_API_PROXY_TARGET` before starting Vite, for example `$env:VITE_API_PROXY_TARGET = "http://127.0.0.1:8001"`.
+Authentication cookies use the `Secure` attribute automatically when every configured `CORS_ORIGINS` entry uses HTTPS. Set `COOKIE_SECURE` explicitly to `true` or `false` to override this behavior; local HTTP development defaults to non-secure cookies.
 
 To use PostgreSQL instead, install PostgreSQL 16 or newer locally, create a database/user, and set `DATABASE_URL` to a `postgresql+psycopg://...` URL before running the migration and API commands. URL-encode special characters in the URL username/password. For example:
 

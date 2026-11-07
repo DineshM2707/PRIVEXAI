@@ -1,5 +1,5 @@
-export type User = { username: string; role: string };
-export type Token = User & { access_token: string; token_type: string };
+﻿export type User = { username: string; role: string };
+export type Token = User;
 
 export type Analytics = {
   total_scans: number;
@@ -72,18 +72,39 @@ export class ApiError extends Error {
   }
 }
 
+function readCsrfToken(): string | undefined {
+  return document.cookie
+    .split("; ")
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith("csrf_token="))
+    ?.split("=")[1];
+}
+
 export async function api<T>(
   path: string,
   token?: string,
   options: RequestInit = {},
 ): Promise<T> {
+  const method = (options.method ?? "GET").toUpperCase();
   const headers = new Headers(options.headers);
   if (typeof options.body === "string" && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    const csrfToken = readCsrfToken();
+    if (csrfToken) {
+      headers.set("X-CSRF-Token", csrfToken);
+    }
+  }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    credentials: "include",
+    headers,
+  });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as
       | { detail?: string; field_errors?: Record<string, string> }
@@ -93,12 +114,19 @@ export async function api<T>(
       body?.field_errors ?? {},
     );
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
-export async function downloadIncidentReport(token: string): Promise<void> {
+export async function downloadIncidentReport(token?: string): Promise<void> {
+  const headers = new Headers();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
   const response = await fetch(`${API_BASE_URL}/incidents/report.csv`, {
-    headers: { Authorization: `Bearer ${token}` },
+    credentials: "include",
+    headers,
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null;

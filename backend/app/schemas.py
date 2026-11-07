@@ -58,6 +58,8 @@ class RegistrationRequest(BaseModel):
 
 
 class UserCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     username: str = Field(
         min_length=3,
         max_length=80,
@@ -65,6 +67,23 @@ class UserCreateRequest(BaseModel):
     )
     password: str = Field(min_length=12, max_length=256)
     role: Literal["analyst", "viewer"]
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        if not (
+            re.search(r"[a-z]", value)
+            and re.search(r"[A-Z]", value)
+            and re.search(r"\d", value)
+            and re.search(r"[^A-Za-z0-9]", value)
+        ):
+            raise ValueError("Password must include uppercase, lowercase, a number, and a symbol.")
+        return value
 
 
 class TokenResponse(BaseModel):

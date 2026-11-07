@@ -12,7 +12,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from app import main, security
 from app.config import settings as default_settings
 from app.database import Base, get_db
-from app.models import Incident, Policy, ScanEvent, User
+from app.models import AuthSession, Incident, Policy, ScanEvent, User
 
 
 class ApiIntegrationTests(unittest.TestCase):
@@ -170,6 +170,21 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(duplicate_email.status_code, 409)
 
+    def test_session_jti_mismatch_rejects_stale_tokens(self):
+        token = self.login()
+        with self.session_factory() as db:
+            session = db.query(AuthSession).order_by(AuthSession.id.desc()).first()
+            self.assertIsNotNone(session)
+            session.access_jti = "tampered-jti"
+            db.commit()
+
+        response = self.client.get(
+            "/api/incidents",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("invalidated", response.json()["detail"].lower())
+
     def test_login_rate_limit_after_five_invalid_attempts(self):
         for _ in range(main.LOGIN_MAX_ATTEMPTS):
             response = self.client.post(
@@ -231,7 +246,7 @@ class ApiIntegrationTests(unittest.TestCase):
             headers=admin_headers,
             json={
                 "username": "demo.viewer",
-                "password": "a-unique-viewer-password",
+                "password": "A-Unique-Viewer-Password-42!",
                 "role": "viewer",
             },
         )
@@ -243,14 +258,14 @@ class ApiIntegrationTests(unittest.TestCase):
                 headers=admin_headers,
                 json={
                     "username": "demo.viewer",
-                    "password": "a-unique-viewer-password",
+                    "password": "A-Unique-Viewer-Password-42!",
                     "role": "viewer",
                 },
             ).status_code,
             409,
         )
 
-        viewer_token = self.login("demo.viewer", "a-unique-viewer-password")
+        viewer_token = self.login("demo.viewer", "A-Unique-Viewer-Password-42!")
         viewer_headers = {"Authorization": f"Bearer {viewer_token}"}
         self.assertEqual(self.client.get("/api/policies", headers=viewer_headers).status_code, 200)
         self.assertEqual(self.client.post("/api/scans", headers=viewer_headers, json={}).status_code, 403)
@@ -260,7 +275,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 headers=viewer_headers,
                 json={
                     "username": "not.allowed",
-                    "password": "another-unique-password",
+                    "password": "Another-Strong-Password-42!",
                     "role": "analyst",
                 },
             ).status_code,
@@ -272,12 +287,12 @@ class ApiIntegrationTests(unittest.TestCase):
             headers=admin_headers,
             json={
                 "username": "demo.analyst",
-                "password": "a-unique-analyst-password",
+                "password": "A-Unique-Analyst-Password-42!",
                 "role": "analyst",
             },
         )
         self.assertEqual(analyst_response.status_code, 201, analyst_response.text)
-        analyst_token = self.login("demo.analyst", "a-unique-analyst-password")
+        analyst_token = self.login("demo.analyst", "A-Unique-Analyst-Password-42!")
         analyst_headers = {"Authorization": f"Bearer {analyst_token}"}
         analyst_scan = self.client.post(
             "/api/scans",
@@ -299,6 +314,46 @@ class ApiIntegrationTests(unittest.TestCase):
                 json={"action": "block", "weight": 40, "enabled": True},
             ).status_code,
             403,
+        )
+
+    def test_admin_user_creation_rejects_weak_passwords_and_normalizes_username(self):
+        admin_token = self.login()
+        admin_headers = {"Authorization": f"******"}
+
+        weak_password = self.client.post(
+            "/api/users",
+            headers=admin_headers,
+            json={
+                "username": "demo.user",
+                "password": "weak-password",
+                "role": "viewer",
+            },
+        )
+        self.assertEqual(weak_password.status_code, 422)
+        self.assertIn("password", weak_password.json()["field_errors"])
+
+        create_response = self.client.post(
+            "/api/users",
+            headers=admin_headers,
+            json={
+                "username": "Demo.User",
+                "password": "Strong-password-42!",
+                "role": "viewer",
+            },
+        )
+        self.assertEqual(create_response.status_code, 201, create_response.text)
+        self.assertEqual(create_response.json()["username"], "demo.user")
+        self.assertEqual(
+            self.client.post(
+                "/api/users",
+                headers=admin_headers,
+                json={
+                    "username": "DEMO.USER",
+                    "password": "Another-strong-password-42!",
+                    "role": "viewer",
+                },
+            ).status_code,
+            409,
         )
 
     def test_scan_masks_and_persists_metadata_for_incident_and_analytics(self):

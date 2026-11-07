@@ -1,5 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "./api";
+
+beforeEach(() => {
+  vi.stubGlobal("document", { cookie: "" });
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();

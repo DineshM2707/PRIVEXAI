@@ -39,6 +39,7 @@ The Blueprint selects Singapore for the API and database; Render static sites ar
 - The backend creates its admin user and default policies on first startup and seeds synthetic demo records in an empty database.
 - Save the admin password you provide during setup. Changing `ADMIN_PASSWORD` later does not rotate a password for an already-created admin user.
 - Render's generated `SECRET_KEY` is held in the service environment, not this repository.
+- Authentication cookies automatically use the `Secure` attribute when all configured `CORS_ORIGINS` use HTTPS. Set `COOKIE_SECURE` explicitly only if you need to override this behavior.
 - Do not submit real student, customer, financial, or health information. The scanner is a rule-based sample demo and does not monitor or block real network transfers.
 - This configuration does not add email verification, password recovery, tenant isolation, distributed login throttling, or production audit/retention controls.
 

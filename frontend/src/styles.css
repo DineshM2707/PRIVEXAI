@@ -484,6 +484,18 @@ body, .app-shell { color: #24364b; background: #f3f8fd; }
   backdrop-filter: blur(22px) saturate(1.15);
   -webkit-backdrop-filter: blur(22px) saturate(1.15);
 }
+.login-card::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: linear-gradient(115deg, rgba(116, 160, 255, 0.12), transparent 38%, rgba(144, 128, 255, 0.1) 60%, transparent 100%);
+  opacity: 0;
+  content: "";
+  animation: login-card-shimmer 8s ease-in-out infinite;
+  pointer-events: none;
+}
+.login-card > * { position: relative; z-index: 1; }
 .login-kicker { color: #386eaa; }
 .login-note svg { color: #536cd1; }
 .login-form input { transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease; }
@@ -569,6 +581,12 @@ body, .app-shell { color: #24364b; background: #f3f8fd; }
 @keyframes auth-card-enter {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
+}
+@keyframes login-card-shimmer {
+  0%, 100% { opacity: 0; transform: translateX(-8%); }
+  25% { opacity: 1; }
+  50% { opacity: .7; transform: translateX(8%); }
+  75% { opacity: .3; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
